@@ -44,3 +44,5 @@ temp/vocab-card-maker/
 temp/mock_vocab.json
 temp/vocab_template.json
 temp/create_vocab_pages.py
+*.xlsx
+.~*
