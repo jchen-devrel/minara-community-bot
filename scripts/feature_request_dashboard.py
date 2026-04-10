@@ -134,6 +134,8 @@ def load_data() -> list[dict]:
             "verdict": score.get("verdict", ""),
             "reason_zh": score.get("reason_zh", ""),
             "reason_en": score.get("reason_en", ""),
+            "thread_id": post.get("thread_id", ""),
+            "post_url": f"https://discord.com/channels/1376392989231812678/{post['thread_id']}" if post.get("thread_id") else "",
             # to be filled by translate
             "title_zh": "",
             "content_zh": "",
@@ -231,6 +233,7 @@ SCORE_COLORS = {
 COLS = [
     ("标题(中文)",     35),
     ("标题(原文)",     30),
+    ("帖子链接",       45),
     ("作者",           12),
     ("标签",           15),
     ("内容摘要(中文)", 45),
@@ -277,6 +280,7 @@ def _write_sheet(ws, records, title_text: str):
         row_data = [
             r.get("title_zh") or r.get("title", ""),
             r.get("title", ""),
+            r.get("post_url", ""),
             r.get("author", ""),
             ", ".join(r.get("tags", [])) or "—",
             r.get("content_zh") or r.get("content", "")[:200],
@@ -299,8 +303,15 @@ def _write_sheet(ws, records, title_text: str):
             cell.alignment = wrap
             cell.border = thin_border
 
-        # Color: score column
-        score_cell = ws.cell(row=ri, column=9)
+        # Make link column a clickable hyperlink
+        link_cell = ws.cell(row=ri, column=3)
+        url = r.get("post_url", "")
+        if url:
+            link_cell.hyperlink = url
+            link_cell.font = Font(name="Arial", size=10, color="2980B9", underline="single")
+
+        # Color: score column (col 10)
+        score_cell = ws.cell(row=ri, column=10)
         sc = int(score) if score else 0
         if sc in SCORE_COLORS:
             score_cell.fill = PatternFill(
@@ -309,8 +320,8 @@ def _write_sheet(ws, records, title_text: str):
             if sc >= 7:
                 score_cell.font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
 
-        # Color: verdict column
-        v_cell = ws.cell(row=ri, column=13)
+        # Color: verdict column (col 14)
+        v_cell = ws.cell(row=ri, column=14)
         if verdict in VERDICT_COLORS:
             v_cell.fill = PatternFill(
                 start_color=VERDICT_COLORS[verdict],
@@ -321,7 +332,7 @@ def _write_sheet(ws, records, title_text: str):
         if is_recent:
             for ci in range(1, len(COLS) + 1):
                 c = ws.cell(row=ri, column=ci)
-                if ci not in (9, 13):
+                if ci not in (3, 10, 14):
                     c.fill = PatternFill(start_color="EBF5FB", end_color="EBF5FB", fill_type="solid")
 
 
@@ -462,6 +473,7 @@ def do_sync(cfg: dict, table_id: str):
         fields = {
             "标题": r.get("title_zh") or r.get("title", ""),
             "原标题": r.get("title", ""),
+            "帖子链接": r.get("post_url", ""),
             "作者": r.get("author", ""),
             "标签": ", ".join(r.get("tags", [])) or "—",
             "内容摘要": r.get("content_zh") or r.get("content", "")[:200],
