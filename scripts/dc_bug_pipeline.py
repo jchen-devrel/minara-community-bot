@@ -50,8 +50,8 @@ FEISHU_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token
 FEISHU_API = "https://open.feishu.cn/open-apis/bitable/v1"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-SUPPORT_CHANNEL_NAMES = {"bug-report", "bug-reports", "feedback"}
-TICKET_PREFIX = "ticket-"
+SUPPORT_KEYWORDS = {"bug-report", "bug-reports", "feedback"}
+TICKET_KEYWORDS = {"ticket-", "error-", "login-", "deposit", "hacked", "refund", "regain"}
 HAZEL_NAMES = {"hazel"}
 
 ACK_MESSAGE = (
@@ -189,8 +189,16 @@ def discover_guild_id(token: str, guild_id: str | None) -> str:
     print("  请用 --guild-id 指定"); sys.exit(1)
 
 
+def _strip_emoji_prefix(name: str) -> str:
+    """Strip emoji/separator prefixes like '🐞┃bug-report' → 'bug-report'."""
+    for sep in ("┃", "│", "｜", "|", " "):
+        if sep in name:
+            name = name.split(sep, 1)[-1]
+    return name.strip()
+
+
 def find_support_channels(token: str, guild_id: str) -> dict[str, list[dict]]:
-    """Find bug-report, feedback channels + ticket-* channels."""
+    """Find bug-report, feedback channels + ticket-like channels."""
     all_channels = dc_get(f"/guilds/{guild_id}/channels", token)
     if not isinstance(all_channels, list):
         print(f"❌ 获取频道列表失败: {all_channels}"); sys.exit(1)
@@ -198,12 +206,13 @@ def find_support_channels(token: str, guild_id: str) -> dict[str, list[dict]]:
     result = {"support": [], "tickets": []}
 
     for ch in all_channels:
-        name = (ch.get("name") or "").lower()
+        raw_name = (ch.get("name") or "").lower()
+        clean = _strip_emoji_prefix(raw_name)
         ch_type = ch.get("type", 0)
 
-        if name in SUPPORT_CHANNEL_NAMES:
+        if clean in SUPPORT_KEYWORDS or any(kw in clean for kw in SUPPORT_KEYWORDS):
             result["support"].append(ch)
-        elif name.startswith(TICKET_PREFIX):
+        elif any(clean.startswith(kw) or kw in clean for kw in TICKET_KEYWORDS):
             result["tickets"].append(ch)
 
     return result
@@ -272,6 +281,37 @@ def msg_to_record(msg: dict, channel_name: str, channel_id: str,
     }
 
 
+def _fetch_forum_threads(channel_id: str, token: str) -> list[dict]:
+    """Fetch active + archived threads from a forum channel."""
+    all_threads = []
+    ch_info = dc_get(f"/channels/{channel_id}", token)
+    guild_id = ch_info.get("guild_id") if isinstance(ch_info, dict) else None
+    if guild_id:
+        active = dc_get(f"/guilds/{guild_id}/threads/active", token)
+        if isinstance(active, dict):
+            for t in active.get("threads") or []:
+                if str(t.get("parent_id")) == str(channel_id):
+                    all_threads.append(t)
+
+    before = None
+    while True:
+        path = f"/channels/{channel_id}/threads/archived/public?limit=100"
+        if before:
+            path += f"&before={before}"
+        data = dc_get(path, token)
+        if not isinstance(data, dict):
+            break
+        threads = data.get("threads") or []
+        if not threads:
+            break
+        all_threads.extend(threads)
+        if not data.get("has_more"):
+            break
+        before = threads[-1].get("thread_metadata", {}).get("archive_timestamp")
+        time.sleep(0.5)
+    return all_threads
+
+
 def do_fetch(cfg: dict, guild_id: str | None, limit: int):
     token = bot_token(cfg)
     if not token:
@@ -294,20 +334,44 @@ def do_fetch(cfg: dict, guild_id: str | None, limit: int):
     for ch in channels["support"]:
         ch_id = ch["id"]
         ch_name = ch["name"]
-        print(f"\n📥 拉取 #{ch_name} (全部消息)...")
+        ch_type = ch.get("type", 0)
 
-        msgs = fetch_channel_messages(ch_id, token, limit=limit)
-        count = 0
-        for msg in msgs:
-            if msg["id"] in seen_ids:
-                continue
-            if msg.get("author", {}).get("bot"):
-                continue
-            rec = msg_to_record(msg, ch_name, ch_id, source="support")
-            new_records.append(rec)
-            seen_ids.add(msg["id"])
-            count += 1
-        print(f"  新增 {count} 条 (共拉取 {len(msgs)})")
+        if ch_type == 15:
+            # Forum channel — fetch threads then messages from each thread
+            print(f"\n📥 拉取 #{ch_name} (论坛, 遍历帖子)...")
+            threads = _fetch_forum_threads(ch_id, token)
+            count = 0
+            for thread in threads:
+                tid = thread["id"]
+                t_name = thread.get("name", tid)
+                msgs = fetch_channel_messages(tid, token, limit=limit)
+                for msg in msgs:
+                    if msg["id"] in seen_ids:
+                        continue
+                    if msg.get("author", {}).get("bot"):
+                        continue
+                    rec = msg_to_record(msg, f"{ch_name}/{t_name}", ch_id, source="support")
+                    rec["thread_id"] = tid
+                    rec["thread_title"] = t_name
+                    new_records.append(rec)
+                    seen_ids.add(msg["id"])
+                    count += 1
+                time.sleep(0.3)
+            print(f"  {len(threads)} 个帖子, 新增 {count} 条消息")
+        else:
+            print(f"\n📥 拉取 #{ch_name} (全部消息)...")
+            msgs = fetch_channel_messages(ch_id, token, limit=limit)
+            count = 0
+            for msg in msgs:
+                if msg["id"] in seen_ids:
+                    continue
+                if msg.get("author", {}).get("bot"):
+                    continue
+                rec = msg_to_record(msg, ch_name, ch_id, source="support")
+                new_records.append(rec)
+                seen_ids.add(msg["id"])
+                count += 1
+            print(f"  新增 {count} 条 (共拉取 {len(msgs)})")
 
     # 2) Pull from ticket channels — only messages that @hazel
     ticket_with_hazel = 0
