@@ -1,0 +1,44 @@
+# ── Secrets & credentials ──
+**/config.json
+**/feishu_config.json
+**/.env
+
+# ── Runtime data ──
+**/data/
+**/forum_export/
+**/pending_mentions.json
+**/replies.jsonl
+**/review.xlsx
+**/*.session
+**/*.session-journal
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── IDE ──
+.vscode/
+.idea/
+
+# ── Archives ──
+*.zip
+
+# ── Symlinks to local machine ──
+xneuro-user-profiler
+tg-devrel-reviewer/data
+
+# ── Generated Excel with real data ──
+tg-partner-tracker/partner_history.xlsx
+
+# ── Temp / unrelated ──
+temp/vocab-card-maker/
+temp/mock_vocab.json
+temp/vocab_template.json
+temp/create_vocab_pages.py

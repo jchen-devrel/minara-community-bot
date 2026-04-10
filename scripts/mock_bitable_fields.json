@@ -1,0 +1,14 @@
+{
+  "source_platform": "discord",
+  "guild_id": "mock_guild_001",
+  "guild_name": "Mock Server",
+  "channel_id": "mock_channel_001",
+  "channel_name": "feedback",
+  "message_id": "mock_msg_cli_001",
+  "user_id": "mock_user_001",
+  "username": "hazel",
+  "display_name": "Hazel",
+  "content": "这是一条 lark-cli 写入多维表格的 mock 数据（非真实 Discord 消息）",
+  "message_time": 1743580000000,
+  "collected_at": "2026-04-02T13:10:00+00:00"
+}

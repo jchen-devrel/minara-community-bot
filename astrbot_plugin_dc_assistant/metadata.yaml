@@ -1,0 +1,9 @@
+name: astrbot_plugin_dc_assistant
+display_name: Discord DevRel Assistant
+version: 0.1.0
+author: jchen
+desc: >
+  Collect Discord channel/forum messages, detect @mentions & keyword matches,
+  generate LLM draft replies, save locally (JSONL) & sync to Feishu Bitable.
+support_platforms:
+  - discord

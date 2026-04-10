@@ -1,0 +1,19 @@
+{
+  "discord_bot_token": "",
+  "my_usernames": ["jchen_web3"],
+  "my_discord_ids": [],
+  "watch_channels": [],
+  "watch_forums": [],
+  "match_keywords": [],
+  "openrouter_api_key": "",
+  "openrouter_model": "openai/gpt-4o-mini",
+  "feishu": {
+    "enabled": true,
+    "app_id": "",
+    "app_secret": "",
+    "app_token": "",
+    "messages_table_id": "",
+    "mentions_table_id": "",
+    "review_table_id": ""
+  }
+}

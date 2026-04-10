@@ -1,0 +1,7 @@
+name: astrbot_plugin_dc_user_collector
+display_name: Discord User Collector
+version: 0.2.0
+author: you
+desc: Collect messages from one Discord user in one channel
+support_platforms:
+  - discord

@@ -1,0 +1,7 @@
+name: astrbot_plugin_tg_assistant
+display_name: Telegram Assistant
+version: 0.1.0
+author: you
+desc: "Telegram 全频道消息收集 + @提及自动草拟回复 + 人工审核后发送 + 每日总结 + 飞书同步"
+support_platforms:
+  - telegram

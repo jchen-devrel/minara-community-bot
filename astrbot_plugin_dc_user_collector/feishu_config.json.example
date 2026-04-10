@@ -1,0 +1,23 @@
+{
+  "enabled": true,
+  "app_id": "cli_xxxxxxxx",
+  "app_secret": "your_app_secret",
+  "app_token": "bascxxxxxxxxxxxxxxxx",
+  "table_id": "tblxxxxxxxx",
+  "save_local_jsonl": true,
+  "date_field_keys": ["timestamp"],
+  "field_mapping": {
+    "source_platform": "source_platform",
+    "guild_id": "guild_id",
+    "guild_name": "guild_name",
+    "channel_id": "channel_id",
+    "channel_name": "channel_name",
+    "message_id": "message_id",
+    "user_id": "user_id",
+    "username": "username",
+    "display_name": "display_name",
+    "content": "content",
+    "timestamp": "message_time",
+    "collected_at": "collected_at"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "telegram_bot_token": "123456:ABC-DEF...(从 @BotFather 获取)",
+  "owner_telegram_id": "你的 Telegram 数字 ID（私聊 @userinfobot 获取）",
+  "my_usernames": ["your_tg_username", "your_bot_username"],
+  "openrouter_api_key": "sk-or-...",
+  "openrouter_model": "openai/gpt-4o-mini",
+  "daily_summary_enabled": true,
+  "daily_summary_hour_utc": 13,
+  "devrel": {
+    "bug_feedback_push_enabled": true,
+    "min_text_length_for_bug": 12,
+    "use_llm_bug_classifier": false,
+    "bug_feedback_keywords": ["自定义关键词1", "wallet error"]
+  },
+  "feishu": {
+    "enabled": false,
+    "app_id": "",
+    "app_secret": "",
+    "app_token": "多维表格 URL 中 /base/ 后面那段",
+    "messages_table_id": "tblXXXXXXXXX",
+    "mentions_table_id": "tblXXXXXXXXX",
+    "replies_table_id": "tblXXXXXXXXX",
+    "summary_table_id": "tblXXXXXXXXX"
+  }
+}
