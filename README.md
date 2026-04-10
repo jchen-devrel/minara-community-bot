@@ -63,6 +63,7 @@ End-to-end toolchain for managing community interactions across **Discord** and 
 
 | Script | Description |
 |--------|-------------|
+| [`scripts/dc_bug_pipeline.py`](scripts/dc_bug_pipeline.py) | **Bug Pipeline**: fetch support channels + tickets @hazel → ack → LLM analyze → Excel → Feishu |
 | [`scripts/sync_forum_to_feishu.py`](scripts/sync_forum_to_feishu.py) | Discord Forum → JSON export + Feishu Bitable |
 | [`scripts/score_feature_requests.py`](scripts/score_feature_requests.py) | AI scoring pipeline for feature requests (user value, business impact, feasibility) |
 | [`scripts/process_feedback.py`](scripts/process_feedback.py) | LLM-based feedback classification (bug/feature_request/question) + Discord reply |
@@ -140,6 +141,36 @@ python3 dc_review.py send --dry-run  # preview
 python3 dc_review.py send            # send replies
 python3 dc_review.py sync            # push to Feishu
 ```
+
+## Bug Pipeline
+
+End-to-end bug triage from Discord support channels:
+
+```
+Discord Server
+├── #bug-report     ──┐
+├── #feedback        ──┼── fetch ──► local JSONL ──► ack reply ──► LLM analyze ──► Excel
+└── #ticket-* @Hazel ──┘                                              │
+                                                                      ▼
+                                                              manual sync → Feishu
+```
+
+```bash
+cd scripts
+
+# One-shot: fetch + ack + analyze + export
+python3 dc_bug_pipeline.py run
+
+# Or step by step:
+python3 dc_bug_pipeline.py fetch                    # pull messages
+python3 dc_bug_pipeline.py ack --dry-run             # preview ack replies
+python3 dc_bug_pipeline.py ack                       # send "Got it, thanks!"
+python3 dc_bug_pipeline.py analyze                   # LLM bug analysis
+python3 dc_bug_pipeline.py export                    # → bug_report.xlsx
+python3 dc_bug_pipeline.py sync --table-id tblXXX    # → Feishu (manual)
+```
+
+LLM analysis produces per-bug: **category**, **severity** (critical/high/medium/low), **component**, **bilingual summary**, **suggested action**, **reproducibility**, **platform**, **user sentiment**.
 
 ## Tech Stack
 

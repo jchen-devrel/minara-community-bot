@@ -6,6 +6,8 @@
 # ── Runtime data ──
 **/data/
 **/forum_export/
+**/bug_pipeline_data/
+**/bug_report.xlsx
 **/pending_mentions.json
 **/replies.jsonl
 **/review.xlsx
