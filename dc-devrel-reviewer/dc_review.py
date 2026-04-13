@@ -8,7 +8,7 @@ Flow:
   3. Edit Excel: A列(操作) = approve/edit/skip, I列(AI草稿) = modify text
   4. python3 dc_review.py send     → Excel → Discord batch reply
   5. python3 dc_review.py sync     → push all data to Feishu Bitable
-  6. python3 dc_review.py fetch    → pull historical messages via Discord API
+  6. python3 dc_review.py fetch --from-config  → pull history (dedupe by msg_id)
 """
 from __future__ import annotations
 
@@ -107,7 +107,11 @@ def discord_send(token: str, channel_id: str, text: str,
                  reply_to: str | None = None) -> bool:
     payload: dict = {"content": text}
     if reply_to:
-        payload["message_reference"] = {"message_id": reply_to}
+        payload["message_reference"] = {
+            "message_id": reply_to,
+            "channel_id": channel_id,
+            "fail_if_not_exists": False,
+        }
     r = _curl("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
               {"Authorization": f"Bot {token}",
                "Content-Type": "application/json"}, payload)
@@ -188,14 +192,88 @@ def llm_generate(api_key: str, model: str,
 #  FETCH: pull historical messages from Discord API
 # ═══════════════════════════════════════════════════════════════════
 
-def do_fetch(cfg: dict, channel_ids: list[str], limit: int = 200):
+def _existing_message_ids() -> set[str]:
+    return {str(r.get("msg_id", "")) for r in read_jsonl(DATA_DIR / "messages.jsonl")
+            if r.get("msg_id")}
+
+
+def _discord_api_team_mention(text: str, msg: dict, cfg: dict) -> bool:
+    my_names = [u.lower().strip().lstrip("@")
+                for u in (cfg.get("my_usernames") or []) if u]
+    my_ids = [str(i).strip() for i in (cfg.get("my_discord_ids") or []) if i]
+    text_low = text.lower()
+    for u in my_names:
+        if f"@{u}" in text_low or u in text_low:
+            return True
+    for uid in my_ids:
+        if f"<@{uid}>" in text or f"<@!{uid}>" in text:
+            return True
+    for m in msg.get("mentions") or []:
+        if str(m.get("id", "")) in my_ids:
+            return True
+    return False
+
+
+def _discord_api_at_hazel(text: str, msg: dict, cfg: dict) -> bool:
+    hazel_ids = [str(i).strip() for i in (cfg.get("hazel_discord_ids") or []) if i]
+    hazel_names = [
+        n.lower().strip().lstrip("@")
+        for n in (cfg.get("hazel_usernames") or ["hazel"])
+        if str(n).strip()
+    ]
+    for uid in hazel_ids:
+        if f"<@{uid}>" in text or f"<@!{uid}>" in text:
+            return True
+    tl = text.lower()
+    for n in hazel_names:
+        if n and f"@{n}" in tl:
+            return True
+    for m in msg.get("mentions") or []:
+        if str(m.get("id", "")) in hazel_ids:
+            return True
+        un = (m.get("username") or "").lower()
+        for n in hazel_names:
+            if n and un == n:
+                return True
+    return False
+
+
+def _discord_api_match_keywords(text: str, kws: list) -> list[str]:
+    if not text or not kws:
+        return []
+    matched = []
+    text_low = text.lower()
+    for kw in kws:
+        kw = (kw or "").strip()
+        if kw and kw.lower() in text_low:
+            matched.append(kw)
+    return matched
+
+
+def do_fetch(
+    cfg: dict,
+    channel_ids: list[str],
+    limit: int = 200,
+    *,
+    auto_ack: bool = False,
+):
     """Fetch recent messages from specified Discord channels via REST API."""
     bot_token = cfg.get("discord_bot_token", "").strip()
     if not bot_token:
         print("❌ discord_bot_token 未配置"); return
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    existing = _existing_message_ids()
     total = 0
+    skipped = 0
+    skipped_bot = 0
+    acked = 0
+    ack_cfg = cfg.get("auto_ack") or {}
+    ack_msg = (ack_cfg.get("message") or "").strip() or (
+        "Thanks for your message — it has been logged and our team "
+        "will look into it as soon as possible."
+    )
+    ack_mode = (ack_cfg.get("mode") or "all").strip().lower()
 
     for ch_id in channel_ids:
         ch_id = ch_id.strip()
@@ -206,31 +284,79 @@ def do_fetch(cfg: dict, channel_ids: list[str], limit: int = 200):
         ch_info = discord_get(f"/channels/{ch_id}", bot_token)
         ch_name = ch_info.get("name", ch_id) if isinstance(ch_info, dict) else ch_id
         ch_type = ch_info.get("type", 0) if isinstance(ch_info, dict) else 0
+        guild_id = str(ch_info.get("guild_id", "") or "") if isinstance(ch_info, dict) else ""
 
         # For forum channels (type 15), fetch threads first
         if ch_type == 15:
             print(f"  论坛频道: #{ch_name}")
             threads = _fetch_forum_threads(ch_id, bot_token)
             for thread in threads:
-                tid = thread["id"]
+                tid = str(thread["id"])
                 t_name = thread.get("name", tid)
                 msgs = _fetch_channel_messages(tid, bot_token, limit=limit)
                 for m in msgs:
-                    rec = _discord_msg_to_record(m, ch_name, ch_id, is_thread=True)
+                    mid = str(m.get("id", ""))
+                    if mid in existing:
+                        skipped += 1
+                        continue
+                    rec = _discord_msg_to_record(
+                        m, f"{ch_name}/{t_name}", tid, True, ch_id, guild_id, cfg,
+                    )
+                    if not rec.get("msg_id"):
+                        skipped_bot += 1
+                        continue
                     append_jsonl(DATA_DIR / "messages.jsonl", rec)
+                    existing.add(mid)
                     total += 1
+                    if auto_ack and _fetch_should_ack(rec, ack_mode):
+                        body = ack_msg
+                        if ack_cfg.get("mention_author", True) and rec.get("author_id"):
+                            body = f"<@{rec['author_id']}> {body}"
+                        if discord_send(bot_token, tid, body, reply_to=mid):
+                            acked += 1
+                        time.sleep(0.35)
                 print(f"    帖子 [{t_name}]: {len(msgs)} 条消息")
                 time.sleep(0.3)
         else:
             print(f"  文字频道: #{ch_name}")
             msgs = _fetch_channel_messages(ch_id, bot_token, limit=limit)
             for m in msgs:
-                rec = _discord_msg_to_record(m, ch_name, ch_id, is_thread=False)
+                mid = str(m.get("id", ""))
+                if mid in existing:
+                    skipped += 1
+                    continue
+                rec = _discord_msg_to_record(
+                    m, ch_name, ch_id, False, "", guild_id, cfg,
+                )
+                if not rec.get("msg_id"):
+                    skipped_bot += 1
+                    continue
                 append_jsonl(DATA_DIR / "messages.jsonl", rec)
+                existing.add(mid)
                 total += 1
+                if auto_ack and _fetch_should_ack(rec, ack_mode):
+                    body = ack_msg
+                    if ack_cfg.get("mention_author", True) and rec.get("author_id"):
+                        body = f"<@{rec['author_id']}> {body}"
+                    if discord_send(bot_token, ch_id, body, reply_to=mid):
+                        acked += 1
+                    time.sleep(0.35)
             print(f"  拉取 {len(msgs)} 条消息")
 
-    print(f"\n✅ 总计 {total} 条消息已存入 {DATA_DIR / 'messages.jsonl'}")
+    print(f"\n✅ 新增写入 {total} 条（跳过已存在 {skipped}，跳过 bot 等 {skipped_bot}）"
+          f"→ {DATA_DIR / 'messages.jsonl'}")
+    if auto_ack:
+        print(f"   auto-ack 已发送 {acked} 条回复")
+
+
+def _fetch_should_ack(rec: dict, mode: str) -> bool:
+    if mode == "all":
+        return True
+    if mode == "mention":
+        return bool(rec.get("is_mention") or rec.get("at_hazel"))
+    if mode == "hazel":
+        return bool(rec.get("at_hazel"))
+    return True
 
 
 def _fetch_channel_messages(channel_id: str, token: str,
@@ -285,9 +411,18 @@ def _fetch_forum_threads(channel_id: str, token: str) -> list[dict]:
     return all_threads
 
 
-def _discord_msg_to_record(msg: dict, channel_name: str, channel_id: str,
-                           is_thread: bool) -> dict:
+def _discord_msg_to_record(
+    msg: dict,
+    channel_name: str,
+    channel_id: str,
+    is_thread: bool,
+    parent_forum_id: str,
+    guild_id: str,
+    cfg: dict,
+) -> dict:
     author = msg.get("author", {})
+    if author.get("bot"):
+        return {}
     ts = msg.get("timestamp") or ""
     if ts:
         try:
@@ -295,20 +430,24 @@ def _discord_msg_to_record(msg: dict, channel_name: str, channel_id: str,
             ts = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         except ValueError:
             pass
+    text = msg.get("content", "")
+    match_kws = cfg.get("match_keywords") or []
+    matched = _discord_api_match_keywords(text, match_kws)
     return {
-        "msg_id": msg.get("id", ""),
+        "msg_id": str(msg.get("id", "")),
         "channel_id": channel_id,
         "channel_name": channel_name,
-        "guild_id": "",
+        "guild_id": guild_id,
         "is_thread": is_thread,
-        "parent_id": "",
-        "author_id": author.get("id", ""),
+        "parent_id": parent_forum_id or "",
+        "author_id": str(author.get("id", "")),
         "author_name": author.get("global_name") or author.get("username") or "",
         "author_username": author.get("username", ""),
-        "text": msg.get("content", ""),
+        "text": text,
         "timestamp": ts,
-        "is_mention": False,
-        "matched_keywords": [],
+        "is_mention": _discord_api_team_mention(text, msg, cfg),
+        "at_hazel": _discord_api_at_hazel(text, msg, cfg),
+        "matched_keywords": matched,
     }
 
 
@@ -341,15 +480,23 @@ def do_scan(cfg: dict):
         text = rec.get("text", "")
         text_low = text.lower()
 
-        is_mention = any(f"@{u}" in text_low or u in text_low for u in my_names)
-        for uid in my_ids:
-            if f"<@{uid}>" in text or f"<@!{uid}>" in text:
-                is_mention = True
+        is_mention = rec.get("is_mention")
+        if is_mention is None:
+            is_mention = any(f"@{u}" in text_low or u in text_low for u in my_names)
+            for uid in my_ids:
+                if f"<@{uid}>" in text or f"<@!{uid}>" in text:
+                    is_mention = True
+
+        ah = rec.get("at_hazel")
+        if ah is None:
+            at_hazel = _discord_api_at_hazel(text, {"mentions": []}, cfg)
+        else:
+            at_hazel = bool(ah)
 
         matched = [kw for kw in match_kws
                    if (kw or "").strip() and kw.lower() in text_low]
 
-        if not is_mention and not matched:
+        if not is_mention and not matched and not at_hazel:
             continue
 
         counter += 1
@@ -360,6 +507,9 @@ def do_scan(cfg: dict):
         if is_mention:
             triggers.append("mention")
             trigger_labels.append("@提及")
+        if at_hazel:
+            triggers.append("hazel")
+            trigger_labels.append("@Hazel/BD")
         if matched:
             triggers.append("keyword")
             trigger_labels.append(f"关键词({', '.join(matched)})")
@@ -409,6 +559,7 @@ def do_scan(cfg: dict):
             "triggers": triggers,
             "trigger_label": " · ".join(trigger_labels),
             "matched_keywords": matched,
+            "at_hazel": at_hazel,
         }
         new_mentions.append(mention_rec)
         append_jsonl(DATA_DIR / "mentions.jsonl", mention_rec)
@@ -466,7 +617,7 @@ def do_export():
 
     if not pending:
         print("没有待审核项。")
-        print(f"  提示: 先运行 python3 dc_review.py fetch --channels <ID> 拉取消息")
+        print("  提示: 先运行 python3 dc_review.py fetch --from-config 或 --channels <ID>")
         print(f"  再运行 python3 dc_review.py scan 扫描匹配项")
         return
 
@@ -723,8 +874,12 @@ def main():
     sub = p.add_subparsers(dest="cmd")
 
     f = sub.add_parser("fetch", help="从 Discord API 拉取历史消息")
-    f.add_argument("--channels", nargs="+", required=True,
-                   help="频道/论坛 ID 列表")
+    f.add_argument("--channels", nargs="*", default=[],
+                   help="频道/论坛 ID；可省略若使用 --from-config")
+    f.add_argument("--from-config", action="store_true",
+                   help="合并 config 中 watch_channels + watch_forums + fetch_extra_channel_ids")
+    f.add_argument("--ack", action="store_true",
+                   help="对符合条件的新消息发送 auto_ack 英文回复（见 auto_ack.mode）")
     f.add_argument("--limit", type=int, default=200,
                    help="每个频道最多拉取条数")
 
@@ -746,7 +901,19 @@ def main():
     cfg = load_config()
 
     if args.cmd == "fetch":
-        do_fetch(cfg, args.channels, args.limit)
+        chs: list[str] = [str(x).strip() for x in (args.channels or []) if str(x).strip()]
+        if args.from_config:
+            extra = cfg.get("fetch_extra_channel_ids") or []
+            merge = (
+                list(cfg.get("watch_channels") or [])
+                + list(cfg.get("watch_forums") or [])
+                + list(extra)
+            )
+            chs = [str(x).strip() for x in merge if str(x).strip()] + chs
+        chs = list(dict.fromkeys(chs))
+        if not chs:
+            print("❌ 请指定 --channels ID 或使用 --from-config"); return
+        do_fetch(cfg, chs, args.limit, auto_ack=args.ack)
     elif args.cmd == "scan":
         do_scan(cfg)
     elif args.cmd == "export":

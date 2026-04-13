@@ -184,6 +184,34 @@ def _should_watch(channel_name: str, channel_id: str, cfg: dict) -> bool:
     return False
 
 
+def _at_hazel(full_text: str, raw_msg: Any, cfg: dict) -> bool:
+    """正文或 mentions 是否指向 Hazel（用于单独标注 BD）。"""
+    hazel_ids = [str(i).strip() for i in (cfg.get("hazel_discord_ids") or []) if i]
+    hazel_names = [
+        n.lower().strip().lstrip("@")
+        for n in (cfg.get("hazel_usernames") or ["hazel"])
+        if str(n).strip()
+    ]
+    for uid in hazel_ids:
+        if f"<@{uid}>" in full_text or f"<@!{uid}>" in full_text:
+            return True
+    ft_low = full_text.lower()
+    for n in hazel_names:
+        if n and (f"@{n}" in ft_low or f"<@{n}>" in ft_low):
+            return True
+    mentions_list = getattr(raw_msg, "mentions", None) or []
+    if isinstance(mentions_list, list):
+        for m in mentions_list:
+            mid = str(getattr(m, "id", "") or "")
+            if mid and mid in hazel_ids:
+                return True
+            un = (getattr(m, "name", "") or "").lower()
+            for n in hazel_names:
+                if n and un == n:
+                    return True
+    return False
+
+
 def _is_mention(full_text: str, raw_msg: Any, cfg: dict) -> bool:
     """Check if the message mentions us by username, ID, or Discord @."""
     my_names = [u.lower().strip().lstrip("@")
@@ -280,6 +308,19 @@ def _extract_dc_info(msg, raw) -> dict[str, Any]:
 #  Plugin class
 # ═══════════════════════════════════════════════════════════════════
 
+def _load_ack_sent_ids() -> set[str]:
+    p = DATA_DIR / "auto_ack_sent_ids.txt"
+    if not p.is_file():
+        return set()
+    return {ln.strip() for ln in p.read_text("utf-8").splitlines() if ln.strip()}
+
+
+def _persist_ack_sent_id(msg_id: str) -> None:
+    _ensure_data_dir()
+    with (DATA_DIR / "auto_ack_sent_ids.txt").open("a", encoding="utf-8") as f:
+        f.write(msg_id + "\n")
+
+
 class DcAssistant(Star):
 
     def __init__(self, context: Context):
@@ -289,6 +330,7 @@ class DcAssistant(Star):
             lambda: deque(maxlen=CONTEXT_BUFFER_SIZE))
         self._pending: dict[str, dict] = {}
         self._cfg = _load_config()
+        self._ack_sent: set[str] = _load_ack_sent_ids()
         _ensure_data_dir()
         logger.info("[dc_assistant] 插件已加载")
 
@@ -322,6 +364,11 @@ class DcAssistant(Star):
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         text = info["content"]
 
+        mention = _is_mention(text, raw, cfg)
+        match_kws = cfg.get("match_keywords") or []
+        matched = _matches_keywords(text, match_kws)
+        at_hazel = _at_hazel(text, raw, cfg)
+
         record = {
             "msg_id": mid,
             "channel_id": info["channel_id"],
@@ -334,8 +381,9 @@ class DcAssistant(Star):
             "author_username": info["author_username"],
             "text": text,
             "timestamp": now_str,
-            "is_mention": False,
-            "matched_keywords": [],
+            "is_mention": mention,
+            "at_hazel": at_hazel,
+            "matched_keywords": matched,
         }
 
         self._msg_buffer[info["channel_id"]].append(record)
@@ -345,24 +393,50 @@ class DcAssistant(Star):
             f"[dc_assistant] msg: ch={info['channel_name']!r} "
             f"author={info['author_name']!r} text={text[:80]!r}")
 
-        # ── Detect @mention ──
-        mention = _is_mention(text, raw, cfg)
-
-        # ── Detect keyword matches ──
-        match_kws = cfg.get("match_keywords") or []
-        matched = _matches_keywords(text, match_kws)
-
-        record["is_mention"] = mention
-        record["matched_keywords"] = matched
-
         triggers: list[str] = []
         if mention:
             triggers.append("mention")
         if matched:
             triggers.append("keyword")
+        if at_hazel:
+            triggers.append("hazel")
 
         if triggers:
             await self._handle_notification(record, triggers, matched)
+
+        # ── Auto-ack（英文收录回执，可选）──
+        ack = cfg.get("auto_ack") or {}
+        if (
+            ack.get("enabled")
+            and aiohttp
+            and mid
+            and mid not in self._ack_sent
+        ):
+            mode = (ack.get("mode") or "all").strip().lower()
+            should_ack = mode == "all" or (
+                mode == "mention" and (mention or at_hazel)
+            ) or (mode == "hazel" and at_hazel)
+            if should_ack:
+                token = (cfg.get("discord_bot_token") or "").strip()
+                tpl = (ack.get("message") or "").strip() or (
+                    "Thanks for your message — it has been logged and our team "
+                    "will look into it as soon as possible."
+                )
+                mention_author = ack.get("mention_author", True)
+                body = tpl
+                if mention_author and info["author_id"]:
+                    body = f"<@{info['author_id']}> {body}"
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        await _discord_reply(
+                            session, token, info["channel_id"], body,
+                            reply_to=mid,
+                        )
+                    self._ack_sent.add(mid)
+                    _persist_ack_sent_id(mid)
+                    logger.info(f"[dc_assistant] auto_ack sent for msg {mid}")
+                except Exception as e:
+                    logger.error(f"[dc_assistant] auto_ack: {e}")
 
         # ── Feishu sync: messages table ──
         fs = cfg.get("feishu") or {}
@@ -393,6 +467,7 @@ class DcAssistant(Star):
 
         has_mention = "mention" in triggers
         has_kw = "keyword" in triggers
+        has_hazel = "hazel" in triggers
 
         draft = ""
         if llm_key and aiohttp:
@@ -400,6 +475,12 @@ class DcAssistant(Star):
                 sys_p = (
                     "You are a DevRel engineer replying in a Discord channel. "
                     "Someone mentioned you. Write a concise, professional, friendly reply "
+                    "in the SAME LANGUAGE as the message."
+                )
+            elif has_hazel:
+                sys_p = (
+                    "You are a DevRel / BD engineer. The message tags or concerns "
+                    "team member Hazel. Write a concise, professional draft reply "
                     "in the SAME LANGUAGE as the message."
                 )
             else:
@@ -429,6 +510,8 @@ class DcAssistant(Star):
         trigger_labels = []
         if has_mention:
             trigger_labels.append("@提及")
+        if has_hazel:
+            trigger_labels.append("@Hazel/BD")
         if has_kw:
             trigger_labels.append(f"关键词({', '.join(matched_kws)})")
         trigger_line = " · ".join(trigger_labels)
@@ -454,6 +537,7 @@ class DcAssistant(Star):
             "triggers": triggers,
             "trigger_label": trigger_line,
             "matched_keywords": matched_kws,
+            "at_hazel": bool(record.get("at_hazel")),
         }
         self._pending[mid] = mention_rec
         _append_jsonl("mentions.jsonl", mention_rec)

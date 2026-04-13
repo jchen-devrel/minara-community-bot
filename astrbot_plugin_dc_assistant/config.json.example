@@ -2,9 +2,18 @@
   "discord_bot_token": "",
   "my_usernames": ["jchen_web3"],
   "my_discord_ids": [],
+  "hazel_discord_ids": [],
+  "hazel_usernames": ["hazel"],
   "watch_channels": [],
   "watch_forums": [],
+  "fetch_extra_channel_ids": [],
   "match_keywords": [],
+  "auto_ack": {
+    "enabled": false,
+    "mode": "all",
+    "message": "Thanks for your message — it has been logged and our team will look into it as soon as possible.",
+    "mention_author": true
+  },
   "openrouter_api_key": "",
   "openrouter_model": "openai/gpt-4o-mini",
   "feishu": {
